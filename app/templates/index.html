@@ -221,6 +221,190 @@
         {% endif %}
       </section>
     </div>
+
+    <div class="roadnet">
+      <section class="card">
+        <h2>路网接边设置 <span class="hint">选一版发布画幅 · 固定容差</span></h2>
+        {% if roadnet.versions %}
+        <form method="post" action="/roadnet/config">
+          <label class="field"><span>发布画幅（线稿按该版清单换算画幅坐标）</span>
+            <select name="version_id">
+              <option value="">— 未选择 —</option>
+              {% for v in roadnet.versions %}
+              <option value="{{ v.id }}" {% if v.id == roadnet.version_id %}selected{% endif %}>
+                #{{ v.seq }} · {{ v.width }}×{{ v.height }} · {{ v.tile_count }} 瓦片 · {{ v.created_at }}
+              </option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="field"><span>接边容差（画幅像素，所有接边共用的固定值）</span>
+            <input type="number" name="tolerance" min="0.000001" step="any" required
+                   value="{{ roadnet.tolerance }}">
+          </label>
+          <div class="actions">
+            <button type="submit" class="primary">保存接边设置</button>
+            {% if roadnet.selected %}
+            <span class="small muted">当前：版本 #{{ roadnet.selected.seq }}（{{ roadnet.selected.width }}×{{ roadnet.selected.height }}），容差 {{ roadnet.tolerance }} px。修改容差会对全部线稿全量重算接边。</span>
+            {% endif %}
+          </div>
+        </form>
+        {% else %}
+        <p class="muted small">尚未发布任何版本。先发布一版画幅，才能选择画幅并上传线稿接边。</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h2>上传线稿 <span class="hint">片内像素坐标折线 JSON · 同瓦片重传即替换</span></h2>
+        {% if roadnet.selected %}
+        <form method="post" action="/roadnet/drafts" enctype="multipart/form-data">
+          <div class="grid2">
+            <label class="field"><span>瓦片号</span>
+              <input type="text" name="tile_id" required maxlength="{{ limits.max_tile_id_len }}"
+                     pattern="[A-Za-z0-9][A-Za-z0-9_.\-]*" placeholder="例如 N37E127">
+            </label>
+            <label class="field"><span>修订号（须与发布清单一致）</span>
+              <input type="number" name="revision" min="1" step="1" required value="1">
+            </label>
+          </div>
+          <label class="field"><span>线稿 JSON（折线为片内像素坐标）</span>
+            <input type="file" name="file" accept=".json,application/json" required>
+          </label>
+          <div class="actions">
+            <button type="submit" class="primary">提交线稿</button>
+          </div>
+        </form>
+        <details>
+          <summary>线稿格式与接边规则</summary>
+          <ul class="rules">
+            <li>格式：<code>{"polylines": [{"id": "r1", "points": [[x, y], …], "join": ["start", "end"]}]}</code>；
+              坐标为片内像素；<code>join</code> 标出待接端点（缺省两端都待接，空数组表示都不接）。</li>
+            <li>候选：来自<b>不同瓦片</b>、两个端点都在两片重叠区内、且距离 ≤ 容差。</li>
+            <li>连边：互为<b>唯一</b>最近候选才连边；等距并列不算唯一，不连。</li>
+            <li>换一片线稿时只重查新旧待接端点及容差内的邻片端点，关联接边随之更新；
+              线稿与接边在同一事务生效，更新失败仍可下载上一份路网。</li>
+          </ul>
+        </details>
+        {% if roadnet.manifest_tiles %}
+        <details>
+          <summary>发布清单中的瓦片（{{ roadnet.manifest_tiles|length }} 个，可接收线稿）</summary>
+          <table>
+            <thead><tr><th>瓦片号</th><th class="num">修订</th><th class="num">X,Y</th><th class="num">尺寸</th></tr></thead>
+            <tbody>
+            {% for t in roadnet.manifest_tiles %}
+              <tr>
+                <td class="mono">{{ t.tile_id }}</td>
+                <td class="num">r{{ t.revision }}</td>
+                <td class="num">{{ t.x }},{{ t.y }}</td>
+                <td class="num">{{ t.width }}×{{ t.height }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </details>
+        {% elif roadnet.manifest_error %}
+        <p class="flash err">{{ roadnet.manifest_error }}</p>
+        {% endif %}
+        {% else %}
+        <p class="muted small">请先在“路网接边设置”中选择一版发布画幅。</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
+        <h2>
+          线稿与接边
+          {% if roadnet.selected %}<span class="hint">版本 #{{ roadnet.selected.seq }} · 容差 {{ roadnet.tolerance }} px</span>{% endif %}
+        </h2>
+        {% if roadnet.selected %}
+        <div class="stats" style="margin-top:0">
+          <span>生效线稿 <b>{{ roadnet.drafts|length }}</b></span>
+          <span>接边 <b>{{ roadnet.edge_total }}</b></span>
+          <span>未接上的待接端点 <b>{{ roadnet.pending_total }}</b></span>
+        </div>
+        <div class="downloads">
+          <a href="/roadnet/download">下载画幅坐标路网 GeoJSON（折线 + 接边）</a>
+        </div>
+
+        {% if roadnet.drafts %}
+        <table style="margin-top:12px">
+          <thead>
+            <tr><th>瓦片号</th><th class="num">修订</th><th class="num">折线</th><th class="num">未接端点</th><th>上传时间</th></tr>
+          </thead>
+          <tbody>
+          {% for d in roadnet.drafts %}
+            <tr>
+              <td class="mono">{{ d.tile_id }}</td>
+              <td class="num">r{{ d.revision }}</td>
+              <td class="num">{{ d.line_count }}</td>
+              <td class="num">{% if d.pending %}<span class="badge warn">{{ d.pending }}</span>{% else %}<span class="badge good">0</span>{% endif %}</td>
+              <td class="small muted">{{ d.uploaded_at }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        <p class="small muted" style="margin:8px 0 0">重新上传同瓦片号的线稿即替换旧稿，关联接边随之更新。</p>
+        {% else %}
+        <p class="muted small">该版本还没有线稿。</p>
+        {% endif %}
+
+        {% if roadnet.edges %}
+        <details open>
+          <summary>接边（{{ roadnet.edge_total }} 条）</summary>
+          <table>
+            <thead>
+              <tr><th>端点 A</th><th>端点 B</th><th class="num">距离 (px)</th></tr>
+            </thead>
+            <tbody>
+            {% for e in roadnet.edges %}
+              <tr>
+                <td class="small">
+                  <span class="mono">{{ e.a_tile }}</span> · {{ e.a_line }} · {{ '起点' if e.a_end == 'start' else '终点' }}
+                  <span class="muted">({{ '%.1f'|format(e.a_fx) }}, {{ '%.1f'|format(e.a_fy) }})</span>
+                </td>
+                <td class="small">
+                  <span class="mono">{{ e.b_tile }}</span> · {{ e.b_line }} · {{ '起点' if e.b_end == 'start' else '终点' }}
+                  <span class="muted">({{ '%.1f'|format(e.b_fx) }}, {{ '%.1f'|format(e.b_fy) }})</span>
+                </td>
+                <td class="num">{{ '%.2f'|format(e.distance) }}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          {% if roadnet.edge_total > roadnet.edges|length %}
+          <p class="small muted">仅显示前 {{ roadnet.edges|length }} 条，完整内容请下载 GeoJSON。</p>
+          {% endif %}
+        </details>
+        {% endif %}
+
+        {% if roadnet.pending %}
+        <details open>
+          <summary>未接上的待接端点（{{ roadnet.pending_total }} 个）</summary>
+          <table>
+            <thead>
+              <tr><th>瓦片号</th><th>折线</th><th>端点</th><th class="num">画幅坐标</th></tr>
+            </thead>
+            <tbody>
+            {% for ep in roadnet.pending %}
+              <tr>
+                <td class="mono">{{ ep.tile_id }}</td>
+                <td class="small">{{ ep.line_id }}</td>
+                <td class="small">{{ '起点' if ep.end_kind == 'start' else '终点' }}</td>
+                <td class="num">({{ '%.1f'|format(ep.fx) }}, {{ '%.1f'|format(ep.fy) }})</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          {% if roadnet.pending_total > roadnet.pending|length %}
+          <p class="small muted">仅显示前 {{ roadnet.pending|length }} 个，完整内容请下载 GeoJSON。</p>
+          {% endif %}
+        </details>
+        {% elif roadnet.drafts %}
+        <p class="small" style="margin-top:10px"><span class="badge good">全部待接端点已接上</span></p>
+        {% endif %}
+        {% else %}
+        <p class="muted small">未选择发布画幅。选择画幅并上传各瓦片线稿后，这里会列出接边与未接上的待接端点。</p>
+        {% endif %}
+      </section>
+    </div>
   </main>
 </body>
 </html>

@@ -58,6 +58,62 @@ CREATE TABLE IF NOT EXISTS published_versions (
     png_bytes           INTEGER NOT NULL,
     csv_bytes           INTEGER NOT NULL
 );
+
+-- Road-network line drafts: one active draft per (version, tile).  A
+-- replaced draft is kept with status 'superseded' for history; its
+-- endpoints and join edges are removed in the same transaction.
+CREATE TABLE IF NOT EXISTS road_drafts (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id     TEXT    NOT NULL,
+    tile_id        TEXT    NOT NULL,
+    revision       INTEGER NOT NULL,
+    tile_x         INTEGER NOT NULL,
+    tile_y         INTEGER NOT NULL,
+    tile_w         INTEGER NOT NULL,
+    tile_h         INTEGER NOT NULL,
+    payload        TEXT    NOT NULL,
+    payload_sha256 TEXT    NOT NULL,
+    line_count     INTEGER NOT NULL,
+    uploaded_at    TEXT    NOT NULL,
+    status         TEXT    NOT NULL DEFAULT 'active'
+                   CHECK (status IN ('active', 'superseded'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_road_drafts_active
+    ON road_drafts(version_id, tile_id) WHERE status = 'active';
+
+-- Pending endpoints (待接端点) of the active drafts, with both tile-pixel
+-- and frame coordinates (frame coords are fixed at upload time from the
+-- published manifest placement).
+CREATE TABLE IF NOT EXISTS road_endpoints (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id   INTEGER NOT NULL REFERENCES road_drafts(id),
+    version_id TEXT    NOT NULL,
+    tile_id    TEXT    NOT NULL,
+    line_id    TEXT    NOT NULL,
+    end_kind   TEXT    NOT NULL CHECK (end_kind IN ('start', 'end')),
+    tx         REAL    NOT NULL,
+    ty         REAL    NOT NULL,
+    fx         REAL    NOT NULL,
+    fy         REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_road_endpoints_version
+    ON road_endpoints(version_id, tile_id);
+
+-- Join edges (接边): pairs of endpoints that are each other's unique
+-- nearest candidate.  endpoint_a < endpoint_b.
+CREATE TABLE IF NOT EXISTS road_edges (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    version_id TEXT NOT NULL,
+    endpoint_a INTEGER NOT NULL REFERENCES road_endpoints(id),
+    endpoint_b INTEGER NOT NULL REFERENCES road_endpoints(id),
+    distance   REAL NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_road_edges_pair
+    ON road_edges(version_id, endpoint_a, endpoint_b);
 """
 
 DEFAULT_SETTINGS: dict[str, str] = {
@@ -69,6 +125,8 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "draft_covered": "0",
     "draft_transparent": "262144",
     "published_version_id": "",
+    "roadnet_version_id": "",
+    "edge_tolerance": "8",
 }
 
 
